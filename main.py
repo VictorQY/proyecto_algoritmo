@@ -67,8 +67,7 @@ def run_live_trading():
             # Obtención de la vela más reciente
             candle = fetcher.fetch_latest_candle()
             if candle:
-                print(f"[DEBUG] Vela obtenida: {candle}")
-                # Actualizar el histórico completo
+                # Actualizar el DataFrame con la nueva vela
                 nueva_fila = pd.DataFrame([{
                     'timestamp': candle['timestamp'],
                     'open': candle['open'],
@@ -79,19 +78,21 @@ def run_live_trading():
                 }])
                 df_history = pd.concat([df_history, nueva_fila], ignore_index=True)
                 df_indicadores = strat.compute_indicators(df_history)
+                
+                # Obtener libro de órdenes para análisis de microestructura
+                order_book = fetcher.fetch_order_book()
+                
+                # Generar la señal utilizando los indicadores técnicos y el order flow
+                signal = strat.generate_signal(df_indicadores, order_book)
+                
                 print(f"[DEBUG] DataFrame actualizado. Total filas: {len(df_history)}")
-
-                if pd.isna(df_indicadores.iloc[-1]['high_n']):
-                    print("[DEBUG] Indicadores no disponibles en la última vela. Esperando la siguiente iteración...")
-                    time.sleep(60)
-                    continue
-
-                signal = strat.generate_signal(df_indicadores)
                 print(f"[DEBUG] Señal generada: {signal}")
+                
                 current_price = candle['close']
                 current_time = candle['timestamp']
                 current_time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
-                
+
+
                 # Apertura de posición
                 if not open_position and daily_pnl > daily_loss_limit:
                     if signal == 1:

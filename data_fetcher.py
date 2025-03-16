@@ -29,3 +29,9 @@ class DataFetcher:
             'close': c,
             'volume': v
         }
+    
+    # En data_fetcher.py
+    def fetch_order_book(self):
+        order_book = self.exchange.fetch_order_book(SYMBOL)
+        return order_book
+
