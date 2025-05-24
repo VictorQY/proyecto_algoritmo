@@ -32,29 +32,29 @@ def run_backtest():
 
 def run_live_trading():
     print("=== Iniciando LIVE TRADING con control de riesgo ===")
-    
+
     db = DBManager(DB_NAME)
     fetcher = DataFetcher()
     strat = ScalpingStrategy()
-    order_mgr = OrderManager()  # OrderManager usa ahora BinanceHMACClient internamente
+    order_mgr = OrderManager()
 
     print("[DEBUG] Obteniendo datos históricos iniciales...")
-    df_history = fetcher.fetch_ohlcv(limit=100)
-    df_history = strat.compute_indicators(df_history)
-    print(f"[DEBUG] DataFrame inicial con {len(df_history)} filas.")
+    df_1m = fetcher.fetch_ohlcv(timeframe='1m', limit=100)
+    df_5m = fetcher.fetch_ohlcv(timeframe='5m', limit=100)
+    df_15m = fetcher.fetch_ohlcv(timeframe='15m', limit=100)
 
-    # Variables de posición
     open_position = False
     side = None
     open_time = None
     open_price = 0
     quantity = 0
+    stop_loss_price = 0
+    take_profit_price = 0
 
-    # CONTROL DE RIESGO
     daily_pnl = 0.0       
     daily_loss_limit = -5.0  
 
-    start_time = time.time()  # para controlar la duración de la prueba
+    start_time = time.time()
 
     while True:
         try:
@@ -62,70 +62,77 @@ def run_live_trading():
             print(f"[DEBUG] Ciclo activo. Tiempo transcurrido: {elapsed_time:.0f} segundos.")
 
             if daily_pnl <= daily_loss_limit:
-                print(f"[RISK ALERT] Pérdida diaria {daily_pnl} <= {daily_loss_limit}. Se detiene apertura de nuevas posiciones.")
+                print(f"[RISK ALERT] Pérdida diaria {daily_pnl} <= {daily_loss_limit}. No se abrirán nuevas posiciones.")
+                time.sleep(60)
+                continue
 
-            # Obtención de la vela más reciente
-            candle = fetcher.fetch_latest_candle()
-            if candle:
-                print(f"[DEBUG] Vela obtenida: {candle}")
-                # Actualizar el histórico completo
-                nueva_fila = pd.DataFrame([{
-                    'timestamp': candle['timestamp'],
-                    'open': candle['open'],
-                    'high': candle['high'],
-                    'low': candle['low'],
-                    'close': candle['close'],
-                    'volume': candle['volume']
-                }])
-                df_history = pd.concat([df_history, nueva_fila], ignore_index=True)
-                df_indicadores = strat.compute_indicators(df_history)
-                print(f"[DEBUG] DataFrame actualizado. Total filas: {len(df_history)}")
+            candle_1m = fetcher.fetch_latest_candle(timeframe='1m')
+            candle_5m = fetcher.fetch_latest_candle(timeframe='5m')
+            candle_15m = fetcher.fetch_latest_candle(timeframe='15m')
 
-                if pd.isna(df_indicadores.iloc[-1]['high_n']):
-                    print("[DEBUG] Indicadores no disponibles en la última vela. Esperando la siguiente iteración...")
-                    time.sleep(60)
-                    continue
+            if candle_1m and candle_5m and candle_15m:
+                df_1m = pd.concat([df_1m, pd.DataFrame([candle_1m])], ignore_index=True)
+                df_5m = pd.concat([df_5m, pd.DataFrame([candle_5m])], ignore_index=True)
+                df_15m = pd.concat([df_15m, pd.DataFrame([candle_15m])], ignore_index=True)
 
-                signal = strat.generate_signal(df_indicadores)
-                print(f"[DEBUG] Señal generada: {signal}")
-                current_price = candle['close']
-                current_time = candle['timestamp']
+                signal, sl_pct, tp_pct = strat.generate_signal(df_1m, df_5m, df_15m)
+
+                current_price = candle_1m['close']
+                current_time = candle_1m['timestamp']
                 current_time_str = current_time.strftime('%Y-%m-%d %H:%M:%S')
-                
-                # Apertura de posición
-                if not open_position and daily_pnl > daily_loss_limit:
+
+                if not open_position:
                     if signal == 1:
                         side = 'long'
                         open_time = current_time
                         open_price = current_price
-                        quantity = order_mgr.calculate_position_size(current_price)
-                        order_mgr.create_market_order('buy', quantity)
-                        open_position = True
-                        print(f"[OPEN LONG] time={current_time_str}, price={open_price}, qty={quantity}")
+                        quantity = order_mgr.calculate_position_size(current_price, side=side)
+                        stop_loss_price = open_price * (1 - sl_pct)
+                        take_profit_price = open_price * (1 + tp_pct)
+
+                        order_response = order_mgr.create_market_order('buy', quantity)
+
+                        if order_response is not None and 'orderId' in order_response:
+                            open_position = True
+                            side = 'long'
+                            open_time = current_time
+                            open_price = current_price
+                            print(f"[OPEN LONG] time={current_time_str}, price={open_price}, qty={quantity}, SL={stop_loss_price}, TP={take_profit_price}")
+                        else:
+                            open_position = False
+                            print("[ERROR] No se pudo abrir LONG, orden rechazada.")
+
+
                     elif signal == -1:
                         side = 'short'
                         open_time = current_time
                         open_price = current_price
-                        quantity = order_mgr.calculate_position_size(current_price)
-                        order_mgr.create_market_order('sell', quantity)
-                        open_position = True
-                        print(f"[OPEN SHORT] time={current_time_str}, price={open_price}, qty={quantity}")
+                        quantity = order_mgr.calculate_position_size(current_price, side=side)
+                        stop_loss_price = open_price * (1 + sl_pct)
+                        take_profit_price = open_price * (1 - tp_pct)
+
+                        order_response = order_mgr.create_market_order('sell', quantity)
+
+                        if order_response is not None and 'orderId' in order_response:
+                            open_position = True
+                            side = 'short'
+                            open_time = current_time
+                            open_price = current_price
+                            print(f"[OPEN SHORT] time={current_time_str}, price={open_price}, qty={quantity}, SL={stop_loss_price}, TP={take_profit_price}")
+                        else:
+                            open_position = False
+                            print("[ERROR] No se pudo abrir SHORT, orden rechazada.")
+
                 else:
-                    if open_time:
-                        elapsed_minutes = (current_time - open_time).total_seconds() / 60.0
-                    else:
-                        elapsed_minutes = 0
-                    print(f"[DEBUG] Posición abierta hace {elapsed_minutes:.2f} minutos.")
+                    elapsed_minutes = (current_time - open_time).total_seconds() / 60.0
                     close_position = False
                     reason = None
 
                     if side == 'long':
-                        stop_price = open_price * (1 - STOP_LOSS_PCT)
-                        take_price = open_price * (1 + TAKE_PROFIT_PCT)
-                        if current_price <= stop_price:
+                        if current_price <= stop_loss_price:
                             reason = "StopLoss"
                             close_position = True
-                        elif current_price >= take_price:
+                        elif current_price >= take_profit_price:
                             reason = "TakeProfit"
                             close_position = True
                         elif elapsed_minutes >= MAX_HOLD_MINUTES:
@@ -134,33 +141,15 @@ def run_live_trading():
 
                         if close_position:
                             order_mgr.create_market_order('sell', quantity)
-                            close_price = current_price
-                            pnl_gross = (close_price - open_price) * quantity
-                            fee = abs(pnl_gross) * 0.0004  
+                            pnl_gross = (current_price - open_price) * quantity
+                            fee = abs(pnl_gross) * 0.0004
                             pnl_net = pnl_gross - fee
-                            db.insert_trade(
-                                symbol=SYMBOL,
-                                strategy='Scalping_Breakout',
-                                side='long',
-                                quantity=quantity,
-                                open_time=open_time.strftime('%Y-%m-%d %H:%M:%S'),
-                                open_price=open_price,
-                                close_time=current_time_str,
-                                close_price=close_price,
-                                fees=fee,
-                                pnl=pnl_net,
-                                reason=reason
-                            )
-                            open_position = False
-                            print(f"[CLOSE LONG] time={current_time_str}, price={close_price}, PnL={pnl_net:.2f}, reason={reason}")
 
                     elif side == 'short':
-                        inv_stop = open_price * (1 + STOP_LOSS_PCT)
-                        inv_take = open_price * (1 - TAKE_PROFIT_PCT)
-                        if current_price >= inv_stop:
+                        if current_price >= stop_loss_price:
                             reason = "StopLoss"
                             close_position = True
-                        elif current_price <= inv_take:
+                        elif current_price <= take_profit_price:
                             reason = "TakeProfit"
                             close_position = True
                         elif elapsed_minutes >= MAX_HOLD_MINUTES:
@@ -169,33 +158,36 @@ def run_live_trading():
 
                         if close_position:
                             order_mgr.create_market_order('buy', quantity)
-                            close_price = current_price
-                            pnl_gross = (open_price - close_price) * quantity
-                            fee = abs(pnl_gross) * 0.0004  
+                            pnl_gross = (open_price - current_price) * quantity
+                            fee = abs(pnl_gross) * 0.0004
                             pnl_net = pnl_gross - fee
-                            db.insert_trade(
-                                symbol=SYMBOL,
-                                strategy='Scalping_Breakout',
-                                side='short',
-                                quantity=quantity,
-                                open_time=open_time.strftime('%Y-%m-%d %H:%M:%S'),
-                                open_price=open_price,
-                                close_time=current_time_str,
-                                close_price=close_price,
-                                fees=fee,
-                                pnl=pnl_net,
-                                reason=reason
-                            )
-                            open_position = False
-                            print(f"[CLOSE SHORT] time={current_time_str}, price={close_price}, PnL={pnl_net:.2f}, reason={reason}")
+
+                    if close_position:
+                        db.insert_trade(
+                            symbol=SYMBOL,
+                            strategy='Scalping_OpenAI',
+                            side=side,
+                            quantity=quantity,
+                            open_time=open_time.strftime('%Y-%m-%d %H:%M:%S'),
+                            open_price=open_price,
+                            close_time=current_time_str,
+                            close_price=current_price,
+                            fees=fee,
+                            pnl=pnl_net,
+                            reason=reason
+                        )
+                        open_position = False
+                        print(f"[CLOSE {side.upper()}] time={current_time_str}, price={current_price}, PnL={pnl_net:.2f}, reason={reason}")
+
             else:
                 print("[DEBUG] No se recibió vela nueva.")
 
-            print("[DEBUG] Durmiendo 60 segundos hasta la próxima iteración...")
             time.sleep(60)
+
         except Exception as e:
             print(f"Error en el loop principal: {e}")
             time.sleep(10)
+
 
 
 def main():

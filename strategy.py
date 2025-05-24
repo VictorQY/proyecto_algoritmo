@@ -1,74 +1,121 @@
-# strategy.py
+# strategy.py optimizado con integración OpenAI usando múltiples marcos temporales
 import pandas as pd
 import numpy as np
-from config import BREAKOUT_BARS, VOL_LOOKBACK, VWAP_PERIOD 
+from openai import OpenAI
+from config import (
+    BREAKOUT_BARS, VOL_LOOKBACK, VWAP_PERIOD,
+    RSI_PERIOD, EMA_PERIOD, OPENAI_API_KEY )
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 class ScalpingStrategy:
     def __init__(self):
         pass
 
     def compute_indicators(self, df):
-        """
-        Calcula los siguientes indicadores:
-          - high_n: Máximo de 'high' en las últimas BREAKOUT_BARS velas (sin incluir la vela actual)
-          - low_n: Mínimo de 'low' en las últimas BREAKOUT_BARS velas (sin incluir la vela actual)
-          - vol_avg: Promedio de 'volume' en las últimas VOL_LOOKBACK velas (sin incluir la vela actual)
-          - vwap: VWAP calculado en una ventana de VWAP_PERIOD (sin incluir la vela actual)
-        """
         df = df.copy()
         df['high_n'] = df['high'].rolling(BREAKOUT_BARS).max().shift(1)
         df['low_n'] = df['low'].rolling(BREAKOUT_BARS).min().shift(1)
         df['vol_avg'] = df['volume'].rolling(VOL_LOOKBACK).mean().shift(1)
-        # Cálculo del VWAP:
         typical_price = (df['high'] + df['low'] + df['close']) / 3
         df['vwap'] = ((typical_price * df['volume']).rolling(VWAP_PERIOD).sum() /
                       df['volume'].rolling(VWAP_PERIOD).sum()).shift(1)
+        df['rsi'] = self.compute_rsi(df['close'], RSI_PERIOD)
+        df['ema'] = df['close'].ewm(span=EMA_PERIOD, adjust=False).mean()
+        df['atr'] = self.compute_atr(df)
         return df
 
-    def generate_signal(self, df):
-        """
-        Genera señales basadas en:
-          - Señal Long (1) si:
-              * El precio de cierre actual supera el máximo (high_n) de las últimas BREAKOUT_BARS velas (sin incluir la vela actual)
-              * El volumen actual es mayor que el promedio de volumen (vol_avg)
-              * El precio actual está por encima del VWAP
-          - Señal Short (-1) si:
-              * El precio de cierre actual es menor que el mínimo (low_n) de las últimas BREAKOUT_BARS velas (sin incluir la vela actual)
-              * El volumen actual es mayor que el promedio de volumen (vol_avg)
-              * El precio actual está por debajo del VWAP
-          - Retorna 0 en caso contrario o si no hay suficientes datos.
-        Además, imprime la información de los indicadores para depuración.
-        """
-        row = df.iloc[-1]
-        if pd.isna(row['high_n']) or pd.isna(row['low_n']) or pd.isna(row['vol_avg']) or pd.isna(row['vwap']):
-            print("[DEBUG] Indicadores incompletos en la última vela.")
-            return 0
+    def compute_rsi(self, series, period):
+        delta = series.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window=period).mean()
+        avg_loss = loss.rolling(window=period).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
 
-        current_close = row['close']
-        recent_high = row['high_n']
-        recent_low = row['low_n']
-        current_vol = row['volume']
-        avg_vol = row['vol_avg']
-        vwap = row['vwap']
+    def compute_atr(self, df, period=14):
+        df = df.copy()
+        df['tr'] = df.apply(lambda row: max(
+            row['high'] - row['low'],
+            abs(row['high'] - row['close']),
+            abs(row['low'] - row['close'])
+        ), axis=1)
+        atr = df['tr'].rolling(period).mean()
+        return atr
 
-        # Imprime los valores de los indicadores
-        print("[DEBUG] Indicadores simplificados en la última vela:")
-        print(f"  Precio actual: {current_close}")
-        print(f"  Maximo  : {recent_high}")
-        print(f"  Minimo   : {recent_low}")
-        print(f"  Volumen actual : {current_vol}")
-        print(f"  Volumen promedio      : {avg_vol}")
-        print(f"  VWAP         : {vwap}")
+    def generate_signal_openai(self, df_1m, df_5m, df_15m):
+        df_1m = self.compute_indicators(df_1m)
+        df_5m = self.compute_indicators(df_5m)
+        df_15m = self.compute_indicators(df_15m)
 
-        # Condición para señal LONG
-        if current_close > recent_high and current_vol > avg_vol and current_close > vwap:
-            print("[DEBUG] Condición para LONG cumplida")
-            return 1
+        messages = [
+            {"role": "system", "content": """
+            Eres un trader experto en scalping del par DOGE/USDT.
+            
+            Recibirás datos técnicos de los marcos temporales de 1, 5 y 15 minutos.
+            
+            Debes responder exactamente en este formato (sin añadir explicaciones, comentarios ni variaciones en el formato):
+            
+            Dirección inmediata: LONG | SHORT | NO_OP
+            STOP LOSS (%): valor%
+            TAKE PROFIT (%): valor%
+            
+            Ejemplo respuesta válida:
+            Dirección inmediata: LONG
+            STOP LOSS (%): 0.15%
+            TAKE PROFIT (%): 0.30%
+            
+            Usa un punto (.) como separador decimal. No uses paréntesis ni caracteres adicionales.
+            """},
+            {"role": "user", "content": f"""
+            Indicadores técnicos última vela:
 
-        # Condición para señal SHORT
-        if current_close < recent_low and current_vol > avg_vol and current_close < vwap:
-            print("[DEBUG] Condición para SHORT cumplida")
-            return -1
+            Marco Temporal: 1 minuto:
+            {df_1m.iloc[-1].to_dict()}
 
-        print("[DEBUG] No se cumplen las condiciones para entrada.")
-        return 0
+            Marco Temporal: 5 minutos:
+            {df_5m.iloc[-1].to_dict()}
+
+            Marco Temporal: 15 minutos:
+            {df_15m.iloc[-1].to_dict()}
+
+            Responde ahora con tu decisión.
+            """}
+        ]
+
+        response = client.chat.completions.create(
+            model="gpt-4o-2024-11-20",
+            messages=messages,
+            temperature=0.0
+        )
+
+        action_text = response.choices[0].message.content.strip()
+        print("[DEBUG] Respuesta OpenAI:", action_text)
+
+        lines = action_text.split('\n')
+
+        action_map = {'LONG': 1, 'SHORT': -1, 'NO_OP': 0}
+
+        action = 0
+        stop_loss_pct = 0.002
+        take_profit_pct = 0.003
+
+        for line in lines:
+            if "Dirección inmediata" in line:
+                direction = line.split(":")[-1].strip()
+                action = action_map.get(direction, 0)
+            elif "STOP LOSS (%)" in line:
+                sl_value = line.split(":")[-1].strip().replace('%', '')
+                stop_loss_pct = float(sl_value) / 100
+            elif "TAKE PROFIT (%)" in line:
+                tp_value = line.split(":")[-1].strip().replace('%', '')
+                take_profit_pct = float(tp_value) / 100
+
+        return action, stop_loss_pct, take_profit_pct
+
+    def generate_signal(self, df_1m, df_5m, df_15m):
+        signal, sl_pct, tp_pct = self.generate_signal_openai(df_1m, df_5m, df_15m)
+        print("[DEBUG] Señal OpenAI:", signal, "SL:", sl_pct, "TP:", tp_pct)
+        return signal, sl_pct, tp_pct

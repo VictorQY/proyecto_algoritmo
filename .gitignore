@@ -178,3 +178,5 @@ config.py
 trades.db
 test_key.pub
 .DS_Store
+prompt.docx
+~$prompt.docx

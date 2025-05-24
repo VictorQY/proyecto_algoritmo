@@ -15,6 +15,21 @@ class BinanceHMACClient:
         self.secret_key = secret_key
         self.base_url = base_url
 
+    def get_margin_account_info(self):
+        endpoint = "/sapi/v1/margin/account"
+        return self.send_signed_request("GET", endpoint)
+
+    def get_symbol_price(self, symbol):
+        endpoint = "/api/v3/ticker/price"
+        params = {"symbol": symbol}
+        response = requests.get(self.base_url + endpoint, params=params)
+        if response.status_code == 200:
+            price = float(response.json()['price'])
+            return price
+        else:
+            print("Error al obtener precio del símbolo:", response.text)
+            return None
+
     def get_timestamp(self):
         return int(time.time() * 1000)
 
@@ -76,7 +91,7 @@ class BinanceHMACClient:
         }
         return self.send_signed_request("POST", endpoint, params)
 
-    def create_margin_order(self, symbol, side, order_type, quantity, isIsolated="TRUE", sideEffectType="AUTO_REPAY"):
+    def create_margin_order(self, symbol, side, order_type, quantity, isIsolated="FALSE", sideEffectType="AUTO_REPAY"):
         """
         Envía una orden de mercado en margen usando el endpoint de margen.
         Parámetros adicionales como isIsolated y sideEffectType se pueden ajustar según la documentación de Binance.
