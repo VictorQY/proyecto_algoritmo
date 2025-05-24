@@ -1,23 +1,20 @@
-# data_fetcher.py
+# data_fetcher.py actualizado claramente
 import ccxt
 import pandas as pd
-from config import SYMBOL, TIMEFRAME
+from config import SYMBOL
 
 class DataFetcher:
     def __init__(self):
-        # Para datos públicos, no es necesario pasar API key ni secret
-        self.exchange = ccxt.binance({
-            'enableRateLimit': True
-        })
+        self.exchange = ccxt.binance({'enableRateLimit': True})
 
-    def fetch_ohlcv(self, limit=200):
-        ohlcvs = self.exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=limit)
-        df = pd.DataFrame(ohlcvs, columns=['timestamp','open','high','low','close','volume'])
+    def fetch_ohlcv(self, timeframe='1m', limit=200):
+        ohlcvs = self.exchange.fetch_ohlcv(SYMBOL, timeframe=timeframe, limit=limit)
+        df = pd.DataFrame(ohlcvs, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
 
-    def fetch_latest_candle(self):
-        ohlcvs = self.exchange.fetch_ohlcv(SYMBOL, timeframe=TIMEFRAME, limit=1)
+    def fetch_latest_candle(self, timeframe='1m'):
+        ohlcvs = self.exchange.fetch_ohlcv(SYMBOL, timeframe=timeframe, limit=1)
         if not ohlcvs:
             return None
         ts, o, h, l, c, v = ohlcvs[0]
@@ -29,9 +26,6 @@ class DataFetcher:
             'close': c,
             'volume': v
         }
-    
-    # En data_fetcher.py
-    def fetch_order_book(self):
-        order_book = self.exchange.fetch_order_book(SYMBOL)
-        return order_book
 
+    def fetch_order_book(self):
+        return self.exchange.fetch_order_book(SYMBOL)
